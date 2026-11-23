@@ -744,6 +744,8 @@
             }
 
             let preferredVoice = null;
+            let iosSpeechUnlocked = false;
+
             function loadChineseVoice() {
                 if (!('speechSynthesis' in window)) return;
                 const voices = window.speechSynthesis.getVoices();
@@ -751,8 +753,10 @@
 
                 preferredVoice =
                     voices.find(v => v.name.includes('Google 普通话（中国大陆）')) ||
+                    voices.find(v => v.name.includes('Ting-Ting') || v.name.includes('Tingting')) ||
                     voices.find(v => v.name.includes('Microsoft Xiaoxiao') || v.name.includes('Microsoft Yunxi')) ||
-                    voices.find(v => v.lang === 'zh-CN' || v.lang === 'cmn-Hans-CN') ||
+                    voices.find(v => (v.lang === 'zh-CN' || v.lang === 'zh_CN' || v.lang === 'cmn-Hans-CN') && !v.name.includes('Compact')) ||
+                    voices.find(v => v.lang && v.lang.toLowerCase().replace('_', '-').startsWith('zh-cn')) ||
                     voices.find(v => v.lang && v.lang.toLowerCase().startsWith('zh'));
             }
 
@@ -761,13 +765,36 @@
                 window.speechSynthesis.onvoiceschanged = loadChineseVoice;
             }
 
+            // Mở khóa SpeechSynthesis trên iOS Safari ngay lần chạm đầu tiên
+            function unlockMobileSpeech() {
+                if (iosSpeechUnlocked || !('speechSynthesis' in window)) return;
+                try {
+                    const silentUtter = new SpeechSynthesisUtterance('');
+                    silentUtter.volume = 0;
+                    window.speechSynthesis.speak(silentUtter);
+                    iosSpeechUnlocked = true;
+                } catch (e) {}
+            }
+            document.addEventListener('touchstart', unlockMobileSpeech, { once: true, passive: true });
+            document.addEventListener('click', unlockMobileSpeech, { once: true, passive: true });
+
             function speak(text, customRate = null) {
                 if (!text) return;
                 if (!('speechSynthesis' in window)) {
                     UI.showToast("Trình duyệt không hỗ trợ phát âm tiếng Trung.", "error");
                     return;
                 }
-                window.speechSynthesis.cancel();
+
+                const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                if (window.speechSynthesis.paused) {
+                    try { window.speechSynthesis.resume(); } catch (e) {}
+                }
+
+                // Trên iOS Safari, gọi cancel() ngay trước speak() sẽ làm Safari nuốt mất câu đọc tiếp theo
+                if (!isMobile && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) {
+                    window.speechSynthesis.cancel();
+                }
+
                 const data = Storage.load();
                 const rate = customRate || data.settings?.speechRate || 1.0;
 
@@ -775,8 +802,15 @@
                 utterance.lang = 'zh-CN';
                 utterance.rate = rate;
                 utterance.pitch = 1.0;
+                utterance.volume = 1.0;
+
                 if (!preferredVoice) loadChineseVoice();
                 if (preferredVoice) utterance.voice = preferredVoice;
+
+                // Giữ tham chiếu toàn cục tránh bị Garbage Collector trên iOS hủy giữa chừng
+                window._activeUtterance = utterance;
+                utterance.onend = () => { window._activeUtterance = null; };
+                utterance.onerror = () => { window._activeUtterance = null; };
 
                 window.speechSynthesis.speak(utterance);
             }
