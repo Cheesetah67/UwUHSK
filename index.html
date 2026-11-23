@@ -1986,6 +1986,11 @@ Trả về JSON đúng cấu trúc:
                 sourceType: 'all',
                 sourceValue: '',
                 shuffle: false,
+                reverseSide: false, // false: Mặt trước Hán -> Mặt sau Việt | true: Mặt trước Việt -> Mặt sau Hán
+                autoPlay: false,
+                autoIntervalSec: 10,
+                autoCountdown: 10,
+                autoTimerId: null,
                 trackProgress: true,
                 showHint: false,
                 cards: [],
@@ -1996,6 +2001,107 @@ Trả về JSON đúng cấu trúc:
                 sessionUnknown: 0,
                 touchStartX: 0
             };
+
+            function stopAutoPlay(silent = false) {
+                if (state.autoTimerId) {
+                    clearInterval(state.autoTimerId);
+                    state.autoTimerId = null;
+                }
+                state.autoPlay = false;
+                if (!silent) {
+                    UI.renderView();
+                }
+            }
+
+            function startAutoPlay() {
+                if (state.cards.length === 0 || state.currentIndex >= state.cards.length) return;
+                if (state.autoTimerId) clearInterval(state.autoTimerId);
+                state.autoPlay = true;
+                state.autoCountdown = state.autoIntervalSec;
+
+                // Phát âm ngay từ đầu nếu mặt trước là chữ Hán
+                if (!state.reverseSide && !state.isFlipped) {
+                    const cur = state.cards[state.currentIndex];
+                    if (cur?.hanzi) DictionaryAI.speak(cur.hanzi);
+                }
+
+                state.autoTimerId = setInterval(() => {
+                    if (!state.autoPlay) {
+                        stopAutoPlay(true);
+                        return;
+                    }
+                    if (state.currentIndex >= state.cards.length) {
+                        stopAutoPlay(false);
+                        return;
+                    }
+
+                    state.autoCountdown -= 1;
+                    const badgeEl = document.getElementById('fc-autoplay-countdown');
+                    if (badgeEl) {
+                        badgeEl.textContent = `${Math.max(1, state.autoCountdown)}s`;
+                    }
+
+                    if (state.autoCountdown <= 0) {
+                        if (!state.isFlipped) {
+                            // Hết 10s mặt trước -> lật sang mặt sau
+                            state.isFlipped = true;
+                            state.autoCountdown = state.autoIntervalSec;
+                            const cur = state.cards[state.currentIndex];
+                            if (state.reverseSide && cur?.hanzi) {
+                                DictionaryAI.speak(cur.hanzi);
+                            }
+                            UI.renderView();
+                        } else {
+                            // Hết 10s mặt sau -> chuyển sang từ tiếp theo
+                            state.currentIndex += 1;
+                            state.isFlipped = false;
+                            state.showHint = false;
+                            state.autoCountdown = state.autoIntervalSec;
+
+                            if (state.currentIndex >= state.cards.length) {
+                                stopAutoPlay(false);
+                                return;
+                            }
+                            const nextCard = state.cards[state.currentIndex];
+                            if (!state.reverseSide && nextCard?.hanzi) {
+                                DictionaryAI.speak(nextCard.hanzi);
+                            }
+                            UI.renderView();
+                        }
+                    }
+                }, 1000);
+
+                UI.renderView();
+            }
+
+            function toggleAutoPlay() {
+                if (state.autoPlay) {
+                    stopAutoPlay(false);
+                } else {
+                    startAutoPlay();
+                }
+            }
+
+            function setAutoIntervalSec(sec) {
+                const val = Math.max(3, Math.min(60, parseInt(sec, 10) || 10));
+                state.autoIntervalSec = val;
+                state.autoCountdown = val;
+                if (state.autoPlay) {
+                    startAutoPlay();
+                } else {
+                    UI.renderView();
+                }
+            }
+
+            function toggleReverseSide() {
+                state.reverseSide = !state.reverseSide;
+                state.isFlipped = false;
+                state.showHint = false;
+                if (state.autoPlay) {
+                    state.autoCountdown = state.autoIntervalSec;
+                }
+                UI.renderView();
+            }
 
             function getDeckWords(sourceType, sourceValue) {
                 const data = Storage.load();
@@ -2029,6 +2135,7 @@ Trả về JSON đúng cấu trúc:
             }
 
             function initSession(sourceType = 'all', sourceValue = '', shuffle = false) {
+                stopAutoPlay(true);
                 let words = getDeckWords(sourceType, sourceValue);
                 if (shuffle) {
                     words = [...words].sort(() => Math.random() - 0.5);
@@ -2051,6 +2158,9 @@ Trả về JSON đúng cấu trúc:
             function flip() {
                 if (state.cards.length === 0) return;
                 state.isFlipped = !state.isFlipped;
+                if (state.autoPlay) {
+                    state.autoCountdown = state.autoIntervalSec;
+                }
                 UI.renderFlashcardCardOnly();
             }
 
@@ -2072,6 +2182,7 @@ Trả về JSON đúng cấu trúc:
                 state.sessionUnknown = prev.unknown;
                 state.isFlipped = false;
                 state.showHint = false;
+                if (state.autoPlay) state.autoCountdown = state.autoIntervalSec;
                 UI.renderView();
             }
 
@@ -2106,12 +2217,16 @@ Trả về JSON đúng cấu trúc:
                 state.currentIndex++;
                 state.isFlipped = false;
                 state.showHint = false;
+                if (state.autoPlay) state.autoCountdown = state.autoIntervalSec;
 
-                if (state.currentIndex >= state.cards.length && state.sourceType === 'deck') {
-                    const deck = data.decks.find(d => d.id === state.sourceValue);
-                    if (deck) {
-                        SRS.reviewDeck(deck);
-                        Storage.save(data);
+                if (state.currentIndex >= state.cards.length) {
+                    stopAutoPlay(true);
+                    if (state.sourceType === 'deck') {
+                        const deck = data.decks.find(d => d.id === state.sourceValue);
+                        if (deck) {
+                            SRS.reviewDeck(deck);
+                            Storage.save(data);
+                        }
                     }
                 }
 
@@ -2131,6 +2246,10 @@ Trả về JSON đúng cấu trúc:
                 flip,
                 toggleHint,
                 toggleTrackProgress,
+                toggleReverseSide,
+                toggleAutoPlay,
+                stopAutoPlay,
+                setAutoIntervalSec,
                 undo,
                 answer,
                 toggleStarCurrent,
@@ -2753,6 +2872,9 @@ Trả về JSON đúng cấu trúc:
                 if (currentView === 'match' && snap.view !== 'match') {
                     MatchGame.stopTimer();
                 }
+                if (currentView === 'flashcard' && snap.view !== 'flashcard') {
+                    FlashcardModule.stopAutoPlay(true);
+                }
 
                 if (snap.view === 'flashcard' && snap.fcContext) {
                     const curFc = FlashcardModule.getState();
@@ -2846,6 +2968,9 @@ Trả về JSON đúng cấu trúc:
             function switchView(view, params = {}, options = {}) {
                 if (currentView === 'match' && view !== 'match') {
                     MatchGame.stopTimer();
+                }
+                if (currentView === 'flashcard' && view !== 'flashcard') {
+                    FlashcardModule.stopAutoPlay(true);
                 }
 
                 if (view === 'quiz' && options.forceMode) {
@@ -4579,6 +4704,22 @@ Trả về JSON đúng cấu trúc:
                                     <i data-lucide="shuffle" class="w-3.5 h-3.5"></i>
                                     <span>Xáo trộn</span>
                                 </button>
+
+                                <button onclick="FlashcardModule.toggleReverseSide()" class="px-3 py-2 rounded-full border ${st.reverseSide ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-700 hover:border-emerald-300'} text-xs font-extrabold flex items-center gap-1.5 transition" title="Đảo mặt trước/sau của thẻ">
+                                    <i data-lucide="arrow-left-right" class="w-3.5 h-3.5"></i>
+                                    <span>${st.reverseSide ? '🇻🇳 Việt → Hán' : '🇨🇳 Hán → Việt'}</span>
+                                </button>
+
+                                <div class="inline-flex items-center rounded-full border ${st.autoPlay ? 'border-amber-400 bg-amber-50' : 'border-slate-200 bg-slate-50/70'} p-0.5">
+                                    <button onclick="FlashcardModule.toggleAutoPlay()" class="px-3 py-1.5 rounded-full text-xs font-extrabold flex items-center gap-1 transition ${st.autoPlay ? 'bg-amber-500 text-white shadow-2xs' : 'text-slate-700 hover:bg-white'}">
+                                        <i data-lucide="${st.autoPlay ? 'pause' : 'play'}" class="w-3.5 h-3.5"></i>
+                                        <span>${st.autoPlay ? 'Dừng' : 'Tự động'}</span>
+                                        ${st.autoPlay ? `<span id="fc-autoplay-countdown" class="ml-0.5 px-1.5 py-0.2 rounded-full bg-white/25 text-[10px]">${st.autoCountdown}s</span>` : ''}
+                                    </button>
+                                    <select onchange="FlashcardModule.setAutoIntervalSec(this.value)" class="bg-transparent text-[11px] font-extrabold text-slate-600 pl-1.5 pr-2 py-1 outline-none cursor-pointer" title="Thời gian mỗi mặt thẻ">
+                                        ${[5, 8, 10, 15, 20].map(sec => `<option value="${sec}" ${st.autoIntervalSec === sec ? 'selected' : ''}>${sec}s</option>`).join('')}
+                                    </select>
+                                </div>
                             </div>
 
                             <div class="text-sm font-extrabold text-slate-700">
@@ -4656,7 +4797,29 @@ Trả về JSON đúng cấu trúc:
 
                 const data = Storage.load();
                 const card = data.words.find(w => w.id === st.cards[st.currentIndex].id) || st.cards[st.currentIndex];
-                const hintText = card.pinyin ? `Pinyin: ${card.pinyin}` : (card.meaning ? `Gợi ý: ${card.meaning.slice(0, 12)}...` : 'Không có gợi ý');
+                const hintText = card.pinyin
+                    ? `Pinyin: ${card.pinyin}`
+                    : (st.reverseSide
+                        ? (card.hanzi ? `Chữ đầu: ${Array.from(card.hanzi)[0]}...` : 'Không có gợi ý')
+                        : (card.meaning ? `Gợi ý: ${card.meaning.slice(0, 12)}...` : 'Không có gợi ý'));
+
+                const frontContentHtml = st.reverseSide ? `
+                    <div class="text-center my-auto px-5 space-y-2.5">
+                        <div class="flex items-center justify-center gap-2 flex-wrap">
+                            ${card.pos ? `<span class="px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-xs font-extrabold">${card.pos}</span>` : ''}
+                            ${card.hanViet ? `<span class="px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 text-xs font-extrabold uppercase">${card.hanViet}</span>` : ''}
+                        </div>
+                        <div class="text-3xl sm:text-5xl font-extrabold text-slate-900 leading-snug">
+                            ${card.meaning || '<span class="text-base italic font-normal text-slate-400">Chưa có nghĩa tiếng Việt</span>'}
+                        </div>
+                        ${st.showHint ? `<div class="text-lg font-bold text-emerald-700 pt-1">${card.pinyin || ''}</div>` : ''}
+                    </div>
+                ` : `
+                    <div class="text-center my-auto px-4">
+                        <div class="font-hanzi text-5xl sm:text-7xl font-bold text-slate-900 tracking-wide">${card.hanzi}</div>
+                        ${st.showHint ? `<div class="text-lg font-bold text-emerald-700 mt-3">${card.pinyin || ''}</div>` : ''}
+                    </div>
+                `;
 
                 stage.innerHTML = `
                     <div class="max-w-2xl mx-auto">
@@ -4692,22 +4855,21 @@ Trả về JSON đúng cấu trúc:
                                             <button onclick="UI.openWordModal('${card.id}')" class="p-2 rounded-full hover:bg-slate-100 text-slate-500 transition" title="Chỉnh sửa thẻ">
                                                 <i data-lucide="pencil" class="w-4 h-4"></i>
                                             </button>
-                                            <button onclick="DictionaryAI.speak('${card.hanzi}')" class="p-2 rounded-full hover:bg-emerald-50 text-slate-600 hover:text-emerald-700 transition" title="Phát âm (Q)">
-                                                <i data-lucide="volume-2" class="w-4 h-4"></i>
-                                            </button>
+                                            ${!st.reverseSide ? `
+                                                <button onclick="DictionaryAI.speak('${card.hanzi}')" class="p-2 rounded-full hover:bg-emerald-50 text-slate-600 hover:text-emerald-700 transition" title="Phát âm (Q)">
+                                                    <i data-lucide="volume-2" class="w-4 h-4"></i>
+                                                </button>
+                                            ` : ''}
                                             <button onclick="FlashcardModule.toggleStarCurrent()" class="p-2 rounded-full hover:bg-amber-50 text-slate-400 hover:text-amber-500 transition" title="Gắn sao (S)">
                                                 <i data-lucide="star" class="w-4 h-4 ${card.starred ? 'fill-amber-400 text-amber-500' : ''}"></i>
                                             </button>
                                         </div>
                                     </div>
 
-                                    <div class="text-center my-auto px-4">
-                                        <div class="font-hanzi text-5xl sm:text-7xl font-bold text-slate-900 tracking-wide">${card.hanzi}</div>
-                                        ${st.showHint ? `<div class="text-lg font-bold text-emerald-700 mt-3">${card.pinyin || ''}</div>` : ''}
-                                    </div>
+                                    ${frontContentHtml}
 
                                     <div class="bg-indigo-50/90 py-2.5 px-3 text-center text-[11px] sm:text-xs font-semibold text-indigo-900 flex items-center justify-center gap-1.5">
-                                        <span>Chạm vào thẻ để lật • Vuốt trái (chưa thuộc) / phải (đã biết)</span>
+                                        <span>${st.autoPlay ? `⏱️ Đang tự động lật sau ${st.autoIntervalSec}s • Chạm thẻ để lật ngay` : 'Chạm vào thẻ để lật • Vuốt trái (chưa thuộc) / phải (đã biết)'}</span>
                                     </div>
                                 </div>
 
@@ -4715,8 +4877,8 @@ Trả về JSON đúng cấu trúc:
                                 <div class="absolute inset-0 backface-hidden rotate-y-180 bg-white rounded-3xl border-2 border-emerald-400 shadow-lg p-5 sm:p-6 flex flex-col justify-between overflow-y-auto">
                                     <div class="flex items-center justify-between border-b border-slate-100 pb-3">
                                         <div>
-                                            <span class="font-hanzi text-2xl font-bold text-slate-900">${card.hanzi}</span>
-                                            <span class="text-sm font-bold text-emerald-700 ml-2">${card.pinyin || ''}</span>
+                                            <span class="font-hanzi text-3xl sm:text-4xl font-bold text-slate-900">${card.hanzi}</span>
+                                            <span class="text-sm sm:text-base font-bold text-emerald-700 ml-2">${card.pinyin || ''}</span>
                                         </div>
                                         <button onclick="event.stopPropagation(); DictionaryAI.speak('${card.hanzi}')" class="p-2 rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100">
                                             <i data-lucide="volume-2" class="w-4 h-4"></i>
@@ -4744,7 +4906,7 @@ Trả về JSON đúng cấu trúc:
                                     </div>
 
                                     <div class="text-center text-[11px] text-slate-400">
-                                        Bấm ✕ (←) nếu đang học • Bấm ✓ (→) nếu đã biết
+                                        ${st.autoPlay ? `⏱️ Tự động chuyển sang thẻ tiếp theo sau ${st.autoIntervalSec}s` : 'Bấm ✕ (←) nếu đang học • Bấm ✓ (→) nếu đã biết'}
                                     </div>
                                 </div>
 
